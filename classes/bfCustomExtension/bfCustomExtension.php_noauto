@@ -1,0 +1,211 @@
+<?php
+/**
+ * Class that helps define template operators
+ * Two ways to define those: 
+ * 1) With a static variable in the class extending this one (see sample at the bottom of this class)
+ * 2) via an XML file, in your extension, with the extension's name (for compatibility with older items, bad because XML file parsing on EVERY page call, for every extension using this)
+ * 
+ * They mostly mirror each other in contents... XML is easier to read, PHP option will not have to read and parse the XML file every page load
+ * @author Miro.Kresonja @ Beaconfire
+ *
+ * v1.0 
+ *
+ * TODO: 
+ * 1) add a parameter that will reverse the order of params (template operators use piped in params first, named params next, and operatorParameters are incredibly rare)
+ * 		This should allow for more natural calls from outside of these classes, without the need for the awkward your_template_operator(null, null, $actualParamPassed) notation
+ * 2) force lower case operators (or at least warn about them)
+ */
+abstract class bfCustomExtension {
+	protected $classDetail = null; 
+	// the following params get written on every method call (see modify method)
+	protected $tpl;
+	protected $rootNamespace;
+	protected $currentNamespace;
+	protected $operatorClassInstances = array();
+	
+	function __construct() {
+	}
+
+	function operatorList() {
+		$classDetail = $this->getLoadClassDetail();
+		return(array_keys($classDetail));
+	}
+
+	function namedParameterPerOperator() {
+		return(true);
+	}
+
+	function namedParameterList() {
+		return($this->getLoadClassDetail());
+	}
+
+	function modify( &$tpl, &$operatorName, &$operatorParameters, &$rootNamespace, &$currentNamespace, &$operatorValue, &$namedParameters) {
+		$this->tpl = $tpl;
+		$this->rootNamespace = $rootNamespace;
+		$this->currentNamespace = $currentNamespace;
+		// operatorValue is what comes in (piped in)
+		// named params are what is specified in the xml file (coming through params in parentheses)
+		// figure out where to go for a result
+		$thisClass = get_class($this);
+		$locationClass = "THIS";
+		if (isset($thisClass::$operatorLocation)) {
+			$aOperatorLocation = $thisClass::$operatorLocation;
+			if (array_key_exists($operatorName, $aOperatorLocation)) {
+				$aOperatorDetail = $aOperatorLocation[$operatorName];
+				// defaults first
+				$bIsOperatorStatic = true;
+				if (array_key_exists("type", $aOperatorDetail)) {
+					$bIsOperatorStatic = $aOperatorDetail["type"] == "static";
+				}
+				if (!array_key_exists("className", $aOperatorDetail)) {
+					$operatorValue = "ERROR: you want a different class for your template operator, but you never said which!";
+					return(false);
+				} else {
+					$locationClass = $aOperatorDetail["className"];
+				}
+				if (!array_key_exists("classPath", $aOperatorDetail)) {
+					$forkingClassName = get_class($this);
+					$classPath = "extension/$forkingClassName/classes/$locationClass.php";
+				} else {
+					$classPath = $aOperatorDetail["$classPath"];
+				}
+			}
+		}
+		
+		if ($locationClass == "THIS") {
+			$operatorValue = $this->$operatorName($operatorParameters, $namedParameters, $operatorValue);
+		} else {
+			if (!class_exists($locationClass)) {
+				// try to include, in a weird path or filename
+				$installationPath = eZSys::siteDir();
+				$lookForFilePath = $installationPath.$classPath;
+				if (file_exists($lookForFilePath)) {
+					include_once($lookForFilePath);
+				}
+			} 
+			if (!class_exists($locationClass)) {
+				$operatorValue = "ERROR: cannot file class $locationClass in $lookForFilePath";
+				return(false);
+			}
+			// have the class, now just figure out static or dynamic
+			if ($bIsOperatorStatic) {
+				$operatorValue = call_user_func(array($locationClass, $operatorName), $operatorParameters, $namedParameters, $operatorValue);
+			} else {
+				// check if we have an instance already
+				if (!array_key_exists($locationClass, $this->operatorClassInstances)) {
+					$classInstance = new $locationClass();
+					$this->operatorClassInstances[$locationClass] = $classInstance;
+				} else {
+					$classInstance = $this->operatorClassInstances[$locationClass];
+				}
+				$operatorValue = $classInstance->$operatorName($operatorParameters, $namedParameters, $operatorValue);
+			}
+		}
+	}
+
+	function getLoadClassDetail() {
+		if (is_null($this->classDetail)) {
+			$className = get_class($this);
+			$this->classDetail = self::getExtensionDetails($className);
+		}
+		return($this->classDetail);
+	}
+
+	static function getExtensionDetails($className) {
+		// TODO: validate operator names, if not all lower case + _, should throw an ez warning at least
+		if (isset($className::$operatorDetail)) {
+			$aProperDetail = self::getExtensionDetailsExplicit($className);
+			return($aProperDetail);
+		} else {
+			$xmlDetail = self::getExtensionDetailsFromXML($className);
+			return($xmlDetail);
+		}
+	}
+	
+	static function getExtensionDetailsExplicit($className) {
+		$operatorDetailType = "hash";
+		if (isset($className::$operatorDetailType)) {
+			$operatorDetailType = $className::$operatorDetailType;
+		}
+		if ($operatorDetailType == "hash") {
+			return($className::$operatorDetail); // no changes needed
+		} else if ($operatorDetailType == "array") {
+			// modify it into a hash, basically
+			$aOperatorDetail = $className::$operatorDetail;
+			foreach ($aOperatorDetail as $operatorName => $operatorHash) {
+				foreach ($operatorHash as $operatorParamName => $operatorParamHash) {
+					$aProperHashDef = array(
+						"type" => "any",
+						"required" => "false",
+					);
+					if (is_array($operatorParamHash)) {
+						if (sizeof($operatorParamHash) > 0) { $aProperHashDef["type"] = $operatorParamHash[0]; }
+						if (sizeof($operatorParamHash) > 1) { $aProperHashDef["required"] = $operatorParamHash[1]; }
+						if (sizeof($operatorParamHash) > 2) { $aProperHashDef["default"] = $operatorParamHash[2]; }
+					}
+					$aOperatorDetail[$operatorName][$operatorParamName] = $aProperHashDef;
+				}
+			}
+			return($aOperatorDetail);
+		}
+	}
+
+	static function getExtensionDetailsFromXML($className) {
+		// load the XML file
+		$xmlFilePath = eZSys::siteDir()."/extension/".$className."/settings/$className.xml";
+		if (!file_exists($xmlFilePath)) {
+			return(array());
+		}
+		$extensionXML = file_get_contents($xmlFilePath);
+		$domDoc = new DOMDocument("1.0");
+		$domDoc->loadXML($extensionXML);
+		
+		$returnArray = array();
+		$xpath = new DOMXPath($domDoc);
+		$nodeObjs = $xpath->query('//operator');
+		for ($i=0; $i<$nodeObjs->length; $i++) {
+			$nodeObj = $nodeObjs->item($i);
+			$operatorName = $nodeObj->getAttribute("name");
+			$returnArray[$operatorName] = array();
+			$paramNodes = $nodeObj->getElementsByTagName("param");
+			for ($j=0; $j < $paramNodes->length; $j++) {
+				$paramNode = $paramNodes->item($j);
+				$paramName = $paramNode->getAttribute("name");
+				$nodeParamArray = array(
+					"type" => $paramNode->getAttribute("type"),
+					"required" => $paramNode->getAttribute("required") == "" ? "true" : $paramNode->getAttribute("required"),
+					"default" => $paramNode->getAttribute("default"),
+				);
+				$returnArray[$operatorName][$paramName] = $nodeParamArray;
+			}
+		}
+		return($returnArray);
+	}
+
+/*
+Sample setup, if you're not using XML :
+	static $operatorDetailType = "hash"; // other options: array
+	// Note: array is just like the hash below, but type/required/default are always in positions 1,2,3 or an array
+
+	static $operatorDetail = array(
+		"operatorname" => array(
+			"param1" => array("type" => "string",	"required" => false,	"default" => "some value"), 
+			"param2" =>	array("type" => "array",	"required" => false),
+		),
+		"operator2name" => array(), // no params
+		"operator3defaultParams" => array(
+			"paramDefaults" => null, // for operatorDetailType = array, this means any type, not required
+		), 
+	);
+
+	// optional, for each operator, you can specify where it comes from (class, 
+	static $operatorLocation = array(
+		"operatorName" => array(
+			"type" => "static", // static by default. Dynamic, where a new class will have to be instantiated
+			"className" => "$className", // required
+			"classPath" => "", // optional, default is extension/{currentClassName = current extension name}/classes/{className provided}.php
+		),
+	);
+ */
+}
+?>

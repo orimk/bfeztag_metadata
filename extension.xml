@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<software>
+    <metadata>
+        <name>&lt;a href="http://www.beaconfire.com"&gt;Beaconfire EzTag Metadata&lt;/a&gt;</name>
+        <version>1.0</version>
+        <copyright>Copyright (C) 2013 &lt;a href="http://www.beaconfire.com"&gt;Beaconfire&lt;/a&gt;</copyright>
+        <license>The MIT License (MIT) (http://opensource.org/licenses/MIT)</license>
+        <software/>
+    </metadata>
+    <dependencies>
+        <extends>
+            <extension name="eztags" />
+        </extends>
+    </dependencies>
+</software>
